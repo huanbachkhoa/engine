@@ -1,0 +1,116 @@
+import requests 
+import time 
+from telegram import Update 
+from telegram.ext import Application, CommandHandler, CallbackContext 
+import asyncio 
+ 
+# Thay 'YOUR_TOKEN' bằng token bot của bạn từ BotFather 
+TOKEN = 'nhập token' 
+# Thay bằng ID của channel 
+CHANNEL_ID = 123445667  # ID channel được thay đổi ở đây 
+ 
+# Danh sách stablecoin 
+stablecoins = {'Tether', 'USD Coin', 'Dai', 'Binance USD', 'TrueUSD', 'Pax Dollar', 'First Digital USD', 'Arbitrum Bridged USDC (Arbitrum)'} 
+ 
+# Cache để lưu trữ thông tin về các đồng coin 
+cache = {} 
+cache_time = 600  # 10 phút 
+ 
+def fetch_coins_from_api(pages=3) -> list: 
+    """Lấy dữ liệu từ CoinGecko và lọc các đồng coin.""" 
+    url = 'https://api.coingecko.com/api/v3/coins/markets' 
+    coins_with_ratio = [] 
+ 
+    for page in range(1, pages + 1): 
+        params = { 
+            'vs_currency': 'usd', 
+            'order': 'market_cap_desc', 
+            'per_page': 100,  # Lấy tối đa 100 đồng coin mỗi trang 
+            'page': page  # Trang hiện tại 
+        } 
+        response = requests.get(url, params=params) 
+ 
+        if response.status_code == 429: 
+            return [] 
+ 
+        if response.status_code != 200: 
+            return [] 
+ 
+        data = response.json() 
+        if not data: 
+            break  # Dừng lại nếu không còn dữ liệu 
+ 
+        for item in data: 
+            volume = item['total_volume'] 
+            market_cap = item['market_cap'] 
+            name = item['name'] 
+            price_change_24h = item.get('price_change_percentage_24h', 0)  # Thay đổi giá 24h 
+             
+            if market_cap > 0 and name not in stablecoins:  # Loại bỏ stablecoin 
+                ratio = volume / market_cap 
+                coins_with_ratio.append((name, volume, market_cap, ratio, price_change_24h)) 
+ 
+        time.sleep(1)  # Đợi 1 giây trước khi gửi yêu cầu tiếp theo 
+ 
+    top_coins = sorted(coins_with_ratio, key=lambda x: x[3], reverse=True)[:10] 
+    return top_coins 
+ 
+async def analyze_volume_marketcap() -> str: 
+    """Phân tích tỷ lệ khối lượng giao dịch trên vốn hóa thị trường và thay đổi giá 24h.""" 
+    global cache 
+ 
+    if 'top_coins' not in cache or not cache['top_coins']: 
+        return 'Không có dữ liệu để hiển thị. Vui lòng thử lại sau.' 
+ 
+    top_coins = cache['top_coins'] 
+ 
+    if not top_coins: 
+        return 'Không có đồng coin nào để hiển thị.' 
+ 
+    result = "Top 10 đồng coin có tỷ lệ khối lượng giao dịch/marketcap lớn nhất:\n\n" 
+    for coin in top_coins: 
+        name, volume, market_cap, ratio, price_change_24h = coin 
+         
+        volume_m = volume / 1_000_000 
+        market_cap_m = market_cap / 1_000_000 
+        result += (f"Coin: {name}\n" 
+                   f"Khối lượng: ${volume_m:.2f}M$\n" 
+                   f"Vốn hóa: ${market_cap_m:.2f}M$\n" 
+                   f"Tỷ lệ: {ratio:.2%}\n" 
+                   f"Thay đổi giá 24h: {price_change_24h:.2f}%\n\n") 
+ 
+    return result 
+ 
+async def send_to_channel(application: Application) -> None: 
+    """Gửi tin nhắn đến channel.""" 
+    volume_info = await analyze_volume_marketcap() 
+     
+    # Gửi tin nhắn đến channel 
+    await application.bot.send_message(chat_id=CHANNEL_ID, text=volume_info) 
+ 
+async def update_cache(application: Application): 
+    """Cập nhật cache và gửi tin nhắn đến channel định kỳ.""" 
+    global cache 
+    cache['top_coins'] = fetch_coins_from_api() 
+    await send_to_channel(application)  # Gửi tin nhắn sau khi cập nhật cache 
+ 
+async def scheduled_updates(application: Application): 
+    """Thực hiện cập nhật định kỳ.""" 
+    while True: 
+        await update_cache(application)  # Cập nhật cache và gửi tin nhắn 
+        await asyncio.sleep(cache_time)  # Đợi 10 phút trước lần cập nhật tiếp theo 
+ 
+def main() -> None: 
+    """Khởi chạy bot.""" 
+    application = Application.builder().token(TOKEN).build() 
+ 
+    # Khởi tạo vòng lặp sự kiện asyncio 
+    loop = asyncio.get_event_loop() 
+     
+    # Khởi chạy vòng lặp sự kiện của bot 
+    loop.create_task(scheduled_updates(application))
+# Bắt đầu chạy bot 
+    application.run_polling() 
+ 
+if name == '__main__': 
+    main()
